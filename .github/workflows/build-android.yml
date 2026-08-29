@@ -1,0 +1,148 @@
+name: Build Native APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Skyline Job ID'
+        required: true
+        type: string
+      base_filename:
+        description: 'Base ZIP filename (di folder native/)'
+        required: true
+        type: string
+      callback_url:
+        description: 'Callback URL untuk update status ke server'
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Notify server — build started
+        if: inputs.callback_url != ''
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"status\": \"running\", \"log_lines\": [\"[GITHUB] Runner aktif — setup JDK...\"]}" || true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Notify server — JDK ready
+        if: inputs.callback_url != ''
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"log_lines\": [\"[GITHUB] JDK 17 siap — mengunduh Base ZIP...\"]}" || true
+
+      - name: Download Base ZIP from repo
+        run: |
+          BASE_PATH="native/${{ inputs.base_filename }}"
+          if [ ! -f "$BASE_PATH" ]; then
+            echo "Base ZIP tidak ditemukan di: $BASE_PATH"
+            exit 1
+          fi
+          echo "Base ZIP ditemukan: $BASE_PATH"
+          mkdir -p build_workspace
+          cp "$BASE_PATH" build_workspace/base.zip
+
+      - name: Extract Base ZIP
+        working-directory: build_workspace
+        run: |
+          unzip -q base.zip -d project
+          echo "Isi project:"
+          ls -la project/
+
+      - name: Detect project root
+        id: detect
+        working-directory: build_workspace
+        run: |
+          GRADLEW_PATH=$(find project -name "gradlew" -maxdepth 5 | head -1)
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "Tidak ditemukan gradlew di ZIP"
+            exit 1
+          fi
+          SUBDIR=$(dirname "$GRADLEW_PATH")
+          echo "Gradlew ditemukan di: $SUBDIR"
+          echo "root=build_workspace/$SUBDIR" >> "$GITHUB_OUTPUT"
+
+      - name: Notify server — building
+        if: inputs.callback_url != ''
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"log_lines\": [\"[GRADLE] Memulai assembleRelease...\"]}" || true
+
+      - name: Grant gradlew execute permission
+        run: chmod +x "${{ steps.detect.outputs.root }}/gradlew"
+
+      - name: Build APK
+        working-directory: ${{ steps.detect.outputs.root }}
+        run: |
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/gradle_output.txt
+          echo "Build selesai"
+
+      - name: Send gradle logs to server
+        if: always() && inputs.callback_url != ''
+        run: |
+          if [ -f /tmp/gradle_output.txt ]; then
+            LOGS=$(tail -30 /tmp/gradle_output.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().split('\n')))")
+          else
+            LOGS='["[GRADLE] Tidak ada output log"]'
+          fi
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"log_lines\": $LOGS}" || true
+
+      - name: Find APK output
+        id: findapk
+        working-directory: ${{ steps.detect.outputs.root }}
+        run: |
+          APK=$(find . -name "*.apk" -path "*/release/*" | head -1)
+          if [ -z "$APK" ]; then
+            APK=$(find . -name "*.apk" | head -1)
+          fi
+          if [ -z "$APK" ]; then
+            echo "APK output tidak ditemukan!"
+            exit 1
+          fi
+          APK="${APK#./}"
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK: $APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skyline-native-${{ inputs.job_id }}
+          path: ${{ steps.detect.outputs.root }}/${{ steps.findapk.outputs.apk_path }}
+          retention-days: 3
+
+      - name: Notify server — success
+        if: success() && inputs.callback_url != ''
+        run: |
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"status\": \"success\", \"download_path\": \"/api/native/artifact/${{ inputs.job_id }}\", \"log_lines\": [\"[GITHUB] ✅ Build berhasil! APK siap didownload.\"]}" || true
+
+      - name: Notify server — failed
+        if: failure() && inputs.callback_url != ''
+        run: |
+          if [ -f /tmp/gradle_output.txt ]; then
+            ERROR_MSG=$(tail -5 /tmp/gradle_output.txt | tr '\n' ' ' | head -c 300)
+          else
+            ERROR_MSG="Build gagal sebelum Gradle sempat jalan"
+          fi
+          curl -s -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"status\": \"failed\", \"error\": \"$ERROR_MSG\", \"log_lines\": [\"[ERROR] $ERROR_MSG\"]}" || true
