@@ -1,4 +1,4 @@
-name: Build Native APK
+namename: Build Native APK
 
 on:
   workflow_dispatch:
@@ -87,6 +87,14 @@ jobs:
       - name: Grant gradlew execute permission
         run: chmod +x "${{ steps.detect.outputs.root }}/gradlew"
 
+      - name: Normalize PNG icons
+        env:
+          RES_PATH: ${{ steps.detect.outputs.root }}/app/src/main/res
+        run: |
+          pip install pillow -q
+          echo "aW1wb3J0IG9zCmZyb20gUElMIGltcG9ydCBJbWFnZQoKcmVzID0gb3MuZW52aXJvblsnUkVTX1BBVEgnXQpmaXhlZCA9IDAKZm9yIHJvb3QsIGRpcnMsIGZpbGVzIGluIG9zLndhbGsocmVzKToKICAgIGZvciBmIGluIGZpbGVzOgogICAgICAgIGlmIGYuZW5kc3dpdGgoJy5wbmcnKToKICAgICAgICAgICAgcCA9IG9zLnBhdGguam9pbihyb290LCBmKQogICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICBpbWcgPSBJbWFnZS5vcGVuKHApCiAgICAgICAgICAgICAgICBpZiBpbWcubW9kZSBub3QgaW4gKCdSR0InLCAnUkdCQScpOgogICAgICAgICAgICAgICAgICAgIGltZyA9IGltZy5jb252ZXJ0KCdSR0JBJykKICAgICAgICAgICAgICAgIGltZy5zYXZlKHAsICdQTkcnKQogICAgICAgICAgICAgICAgZml4ZWQgKz0gMQogICAgICAgICAgICAgICAgcHJpbnQoJ0ZpeGVkOicsIHApCiAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToKICAgICAgICAgICAgICAgIHByaW50KCdTa2lwOicsIHAsIGUpCnByaW50KCdUb3RhbCBmaXhlZDonLCBmaXhlZCkK" | base64 -d > /tmp/fix_png.py
+          python3 /tmp/fix_png.py
+
       - name: Build APK
         working-directory: ${{ steps.detect.outputs.root }}
         run: |
@@ -124,7 +132,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: skyline-native-${{ inputs.job_id }}
+          name: app-release-${{ inputs.job_id }}
           path: ${{ steps.detect.outputs.root }}/${{ steps.findapk.outputs.apk_path }}
           retention-days: 3
 
@@ -133,7 +141,7 @@ jobs:
         run: |
           curl -s -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
-            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"status\": \"success\", \"download_path\": \"/api/native/artifact/${{ inputs.job_id }}\", \"log_lines\": [\"[GITHUB] ✅ Build berhasil! APK siap didownload.\"]}" || true
+            -d "{\"job_id\": \"${{ inputs.job_id }}\", \"status\": \"success\", \"download_path\": \"/api/native/artifact/${{ inputs.job_id }}\", \"log_lines\": [\"[GITHUB] Build berhasil! APK siap didownload.\"]}" || true
 
       - name: Notify server — failed
         if: failure() && inputs.callback_url != ''
